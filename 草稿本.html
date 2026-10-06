@@ -1,0 +1,1388 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>草稿本</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;overflow:hidden}
+  body{
+    background:#1e1e1e;color:#d4d4d4;
+    font:16px/1.55 "Microsoft YaHei UI","Segoe UI",system-ui,sans-serif;
+    user-select:none;-webkit-user-select:none;
+  }
+  /* 暗色画布（无背景点阵） */
+  #stage{
+    position:fixed;inset:0;overflow:hidden;cursor:default;outline:none;
+    background-color:#1e1e1e;
+  }
+  #stage.pan{cursor:grab}
+  #stage.panning{cursor:grabbing}
+  /* 按住 Ctrl = 抓手（抓文字/图片本身） */
+  #stage.pick{cursor:grab}
+  #stage.pick .note{cursor:grab}
+  #stage.pick .note .ct{cursor:grab}
+  /* 不按修饰键时，鼠标停在边缘/角上就换成缩放光标：
+     文本框右边缘改宽度，图片四角等比缩放 */
+  .note.rzw, .note.rzw .ct{cursor:ew-resize}
+  .note.rzse, .note.rzse .ct{cursor:nwse-resize}
+  .note.rzne, .note.rzne .ct{cursor:nesw-resize}
+  /* 悬停在可缩放位置时给出明显的边框提示（未选中也能看出来） */
+  .note.rzw, .note.rzse, .note.rzne{
+    border-color:#8ab4f8 !important;
+    box-shadow:0 0 0 3px rgba(138,180,248,.28), 0 0 12px rgba(138,180,248,.45) !important;
+  }
+  .note.rzw::after, .note.rzse::after, .note.rzne::after{
+    content:'';position:absolute;pointer-events:none;background:#8ab4f8;
+    box-shadow:0 0 6px rgba(138,180,248,.9);z-index:9;
+  }
+  /* 文本框：右边缘一整条 */
+  .note.rzw::after{right:-2px;top:50%;transform:translateY(-50%);width:3px;height:70%;border-radius:2px}
+  /* 图片：右下角 / 右上角的小方块（比原来大一圈，好观察） */
+  .note.rzse::after{right:-5px;bottom:-5px;width:11px;height:11px;border-radius:2px}
+  .note.rzne::after{right:-5px;top:-5px;width:11px;height:11px;border-radius:2px}
+  #layer{position:absolute;left:0;top:0;width:0;height:0;transform-origin:0 0}
+
+  .note{
+    position:absolute;min-width:24px;min-height:24px;
+    padding:5px 9px;border-radius:4px;
+    border:1px solid transparent;
+    cursor:default;outline:none;
+  }
+  .note:hover{border-color:#4d4d4d}
+  .note.sel{border-color:#569cd6;box-shadow:0 0 0 1px #569cd6 inset}
+
+  /* 图片便签不用 border（border 会占布局高度，害得缩放时比例走样），改用 outline */
+  .note.imgnote{border:0;padding:0;line-height:0}
+  .note.imgnote:hover{outline:1px solid #4d4d4d}
+  .note.imgnote.sel{box-shadow:none;outline:1px solid #569cd6}
+
+  /* 编辑区：文字在这里，删除按钮和把手在它外面 */
+  .note .ct{
+    white-space:pre-wrap;word-break:break-word;
+    user-select:text;-webkit-user-select:text;
+    cursor:inherit;outline:none;min-height:20px
+  }
+  /* 没手动改过宽度时，文字框随文字自动向右扩 */
+  .note .ct.auto{white-space:pre;width:max-content;min-width:14px;max-width:none}
+  .note .ct[contenteditable="true"]:focus{cursor:text}
+  .note img{display:block;width:100%;height:auto;pointer-events:none;border-radius:2px}
+
+  /* 没填充色的便签在暗底上改用浅色字，否则看不见 */
+  .note:not(.hasfill) .ct{color:#e4e4e4}
+
+  .del{
+    position:absolute;right:-9px;top:-9px;width:18px;height:18px;line-height:16px;
+    text-align:center;border-radius:50%;background:#2d2d30;border:1px solid #5a5a5a;
+    color:#c8c8c8;font-size:12px;cursor:pointer;display:none;z-index:5
+  }
+  .note.sel .del{display:block}
+  .del:hover{background:#5a2d2d;border-color:#a05a5a;color:#ff9a8a}
+
+
+
+  /* 填充色：用 CSS 变量，方便按亮度自动调节文字颜色 */
+  .note{ --bg: transparent; --ink: #1f2328; }
+  .note.hasfill{ background: var(--bg); }
+  .note.hasfill .ct{ color: var(--ink); }
+
+  /* 用 left/right 定宽居中，避免被右下角的清空按钮挤偏 */
+  #palette{
+    position:fixed;left:0;right:0;bottom:14px;margin:0 auto;width:max-content;
+    display:none;gap:7px;align-items:center;
+    background:#2d2d30;border:1px solid #454545;border-radius:10px;
+    padding:6px 8px;box-shadow:0 4px 16px rgba(0,0,0,.45);z-index:100
+  }
+  #palette.on{display:flex}
+  #palette .sw{
+    width:20px;height:20px;border-radius:5px;cursor:pointer;
+    border:1px solid rgba(255,255,255,.22);box-sizing:border-box
+  }
+  #palette .sw:hover{transform:scale(1.12)}
+  #palette .sw.act{box-shadow:0 0 0 2px #569cd6}
+  #palette .sw.none{
+    background:#3a3a3d;position:relative;overflow:hidden
+  }
+  #palette .sw.none::after{
+    content:'';position:absolute;left:-3px;top:50%;width:26px;height:1.5px;
+    background:#e06c5a;transform:rotate(-45deg)
+  }
+  #palette .pick{
+    width:20px;height:20px;padding:0;border:1px solid rgba(255,255,255,.22);
+    border-radius:5px;background:#3a3a3d;cursor:pointer
+  }
+  #palette .sep{width:1px;height:18px;background:#4a4a4a}
+
+  #hint{
+    position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+    color:#6e6e6e;font-size:15px;text-align:center;line-height:2;pointer-events:none
+  }
+  #hint b{color:#9a9a9a}
+  #status{min-width:38px;text-align:right;font-size:11.5px;color:#7a7a7a;margin-left:6px}
+  #dirtyMark{color:#e0a44a;font-size:16px;line-height:0;display:none}
+  body.dirty #dirtyMark{display:inline}
+
+  /* 自绘标题栏：只有右上角三个按钮 */
+  #titlebar{
+    position:fixed;left:0;right:0;top:0;height:34px;z-index:200;
+    display:flex;align-items:center;
+    background:#252526;border-bottom:1px solid #1b1b1b;
+    color:#8a8a8a;font-size:12px;
+    user-select:none;-webkit-user-select:none;
+  }
+  #tb-btns{margin-left:auto;display:flex;height:100%}
+
+  /* 左上角两个按钮：位置和宽度都固定，草稿名再长也不会把清空按钮挤走 */
+  #btnDraft, #clear{
+    display:flex;align-items:center;height:25px;
+    border:1px solid transparent;border-radius:5px;background:transparent;
+    color:#c2c2c2;font:inherit;font-size:12px;cursor:pointer;
+    flex:0 0 auto;box-sizing:border-box;
+  }
+  #btnDraft{width:96px;padding:0 9px;gap:6px;justify-content:flex-start}
+  #btnDraft svg{width:19px;height:19px;display:block;flex:none;opacity:.9}
+  #btnDraft #draftLabel{
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    flex:0 1 auto;min-width:0;
+  }
+  #dirtyMark{flex:none;margin-left:1px}
+  #btnDraft:hover{background:#3a3a3a;border-color:#4a4a4a;color:#fff}
+  #clear{width:33px;padding:0;justify-content:center}
+  #clear svg{width:19px;height:19px;display:block}
+  #clear:hover{background:#3a2a2a;border-color:#7a4a4a;color:#ff8a7a}
+
+  /* 存/取草稿对话框 */
+  #dlgWrap{
+    position:fixed;inset:0;z-index:400;display:none;
+    align-items:center;justify-content:center;background:rgba(0,0,0,.5)
+  }
+  #dlgWrap.on{display:flex}
+  #dlg{
+    width:440px;max-width:88vw;max-height:78vh;display:flex;flex-direction:column;
+    background:#252526;border:1px solid #454545;border-radius:10px;
+    box-shadow:0 14px 44px rgba(0,0,0,.6);color:#d4d4d4;
+  }
+  .dlg-head{
+    display:flex;align-items:center;gap:8px;padding:9px 10px;
+    border-bottom:1px solid #3a3a3a
+  }
+  #dlgTabs{display:flex;gap:4px}
+  .dlg-head .tab{
+    font:inherit;font-size:13px;color:#9a9a9a;background:transparent;border:1px solid transparent;
+    border-radius:6px;padding:4px 12px;cursor:pointer
+  }
+  .dlg-head .tab:hover{background:#333;color:#eee}
+  .dlg-head .tab.on{background:#2f4a63;border-color:#569cd6;color:#cfe8ff}
+  #dlgX{
+    margin-left:auto;width:26px;height:26px;border:0;border-radius:6px;
+    background:transparent;color:#9a9a9a;font:inherit;font-size:13px;cursor:pointer
+  }
+  #dlgX:hover{background:#d13438;color:#fff}
+
+  .dlg-body{padding:14px;overflow:auto;display:flex;flex-direction:column;gap:8px}
+  /* 关键：hidden 靠 display:none 生效，上面那条 flex 会把它盖掉，这里压回来 */
+  .dlg-body[hidden]{display:none !important}
+  .dlg-lab{font-size:12px;color:#9a9a9a}
+  #draftName{
+    font:inherit;font-size:14px;color:#e8e8e8;background:#1e1e1e;
+    border:1px solid #4a4a4a;border-radius:6px;padding:8px 10px;outline:none;width:100%
+  }
+  #draftName:focus{border-color:#569cd6}
+  .dlg-hint{font-size:11.5px;color:#7a7a7a;line-height:1.6}
+  .dlg-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
+  .dlg-actions button{
+    font:inherit;font-size:13px;color:#c8c8c8;background:#2d2d30;
+    border:1px solid #4a4a4a;border-radius:6px;padding:6px 16px;cursor:pointer
+  }
+  .dlg-actions button:hover{background:#3a3a3d;color:#fff}
+  .dlg-actions button.primary{background:#2f6fb5;border-color:#569cd6;color:#fff}
+  .dlg-actions button.primary:hover{background:#3a80cc}
+
+  .dlg-list{
+    border:1px solid #3a3a3a;border-radius:6px;max-height:300px;overflow:auto;min-height:60px
+  }
+  .dlg-list .empty{padding:16px;text-align:center;color:#6e6e6e;font-size:12.5px}
+  .dlg-list .item{
+    display:flex;align-items:center;gap:10px;padding:9px 12px;cursor:pointer;
+    border-bottom:1px solid #303030
+  }
+  .dlg-list .item:last-child{border-bottom:0}
+  .dlg-list .item:hover{background:#2f4a63}
+  .dlg-list .item .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px}
+  .dlg-list .item .tm{font-size:11.5px;color:#8a8a8a}
+  .dlg-list .item .delx{
+    width:20px;height:20px;line-height:18px;text-align:center;border-radius:4px;
+    color:#8a8a8a;font-size:12px
+  }
+  .dlg-list .item .delx:hover{background:#d13438;color:#fff}
+  #tb-btns button{
+    width:46px;height:100%;padding:0;border:0;background:transparent;
+    color:#b8b8b8;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  }
+  #tb-btns button svg{width:12px;height:12px;display:block}
+  #tb-btns button:hover{background:#3a3a3a;color:#fff}
+  #tb-btns #btnClose:hover{background:#d13438;color:#fff}
+  /* 草稿本嵌在程序里时，画布从标题栏下面开始 */
+  body.embedded #stage{top:34px}
+  body.embedded #hint{top:calc(50% + 17px)}
+  /* 直接用浏览器打开这个 html 时：藏掉标题栏（里面的按钮仍可用） */
+  body.no-shell #titlebar{display:none}
+</style>
+</head>
+<body>
+
+<!-- 自绘标题栏：左上角是草稿/清空，右上角是窗口按钮 -->
+<div id="titlebar">
+  <button id="btnDraft" type="button" title="保存 / 载入草稿">
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round"
+            d="M4 1.8h5.2L12.5 5v9.2H4z"/>
+      <path fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round"
+            d="M9 1.8V5h3.5"/>
+    </svg>
+    <span id="draftLabel">未命名</span>
+    <span id="dirtyMark" title="有未保存的改动">•</span>
+  </button>
+  <button id="clear" type="button" title="清空画布">
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <path fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"
+            stroke-linejoin="round"
+            d="M2.6 4.3h10.8M6.2 4.3V2.6h3.6v1.7M4.2 4.3l.7 9h6.2l.7-9M6.6 6.6v4.4M9.4 6.6v4.4"/>
+    </svg>
+  </button>
+  <span id="tb-btns">
+    <button id="btnMin" type="button" title="最小化" tabindex="-1">
+      <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" stroke="currentColor" stroke-width="1.1"/></svg>
+    </button>
+    <button id="btnMax" type="button" title="最大化 / 还原" tabindex="-1">
+      <svg viewBox="0 0 10 10" aria-hidden="true"><rect x="0.6" y="0.6" width="8.8" height="8.8" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>
+    </button>
+    <button id="btnClose" type="button" title="关闭" tabindex="-1">
+      <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0.6 0.6l8.8 8.8M9.4 0.6L0.6 9.4" stroke="currentColor" stroke-width="1.1"/></svg>
+    </button>
+  </span>
+</div>
+
+<div id="dlgWrap" aria-hidden="true">
+  <div id="dlg">
+    <div class="dlg-head">
+      <span id="dlgTabs">
+        <button class="tab on" data-tab="save" type="button">保存</button>
+        <button class="tab" data-tab="load" type="button">载入</button>
+      </span>
+      <button id="dlgX" type="button" title="关闭">✕</button>
+    </div>
+
+    <div class="dlg-body" id="paneSave">
+      <label class="dlg-lab" for="draftName">草稿名字</label>
+      <input id="draftName" type="text" spellcheck="false" placeholder="给这份草稿起个名字">
+      <div class="dlg-hint">同名会覆盖已有的那份。不点保存直接退出，改动不会留下。</div>
+      <div class="dlg-actions">
+        <button id="doSave" class="primary" type="button">保存</button>
+      </div>
+    </div>
+
+    <div class="dlg-body" id="paneLoad" hidden>
+      <div class="dlg-lab">选择一份草稿</div>
+      <div id="draftList" class="dlg-list"></div>
+      <div class="dlg-actions">
+        <button id="doNew" type="button">新建空白草稿</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="stage" tabindex="-1">
+  <div id="layer"></div>
+</div>
+
+<div id="hint">
+  <b>双击空白处</b> 开始打字<br>
+  <b>Ctrl+V</b> 直接粘贴截图<br>
+  <b>按住拖动</b> 可放到任意位置<br>
+  <span style="font-size:13px">滚轮缩放 · 按住 <b>Ctrl</b> 或空格拖动平移</span><br>
+  <span style="font-size:12px;color:#5a5a5a">F11 最大化 / 还原 · Esc 关闭</span>
+</div>
+
+<div id="palette">
+  <span class="sw none" data-bg="" title="无填充"></span>
+  <span class="sw" data-bg="#fff3bf" style="background:#fff3bf" title="黄"></span>
+  <span class="sw" data-bg="#d8f5d0" style="background:#d8f5d0" title="绿"></span>
+  <span class="sw" data-bg="#d6ecff" style="background:#d6ecff" title="蓝"></span>
+  <span class="sw" data-bg="#f3dcff" style="background:#f3dcff" title="紫"></span>
+  <span class="sw" data-bg="#ffdfe5" style="background:#ffdfe5" title="粉"></span>
+  <span class="sw" data-bg="#e6e6e2" style="background:#e6e6e2" title="灰"></span>
+  <span class="sep"></span>
+  <button class="pick" id="pickColor" type="button" title="自定义颜色"></button>
+</div>
+
+<script>
+/* 最前面先判断「是不是程序新启动」。必须放在所有逻辑之前：
+   外壳要读草稿名、画布要读内容，都得在这之后。 */
+(function () {
+  var fresh = /[#&?]fresh\b/.test(window.location.hash + window.location.search);
+  window.__dpFresh = fresh;
+  if (!fresh) return;
+  try { localStorage.removeItem('draftpad.v1'); } catch (e) { }
+  // 名字也要一起清：画布是空白的，却还挂着上次那份草稿的名字，会让人以为内容还在
+  try { localStorage.removeItem('draftpad.current'); } catch (e2) { }
+  // 去掉标记，这样页面内部刷新不会再清一次（否则编辑到一半刷新就白干了）
+  try {
+    history.replaceState(null, '', location.pathname + location.search);
+  } catch (e3) { }
+})();
+
+(function () {
+  'use strict';
+
+  var KEY   = 'draftpad.v1';
+  var stage = document.getElementById('stage');
+  var layer = document.getElementById('layer');
+  var hint  = document.getElementById('hint');
+  var statusEl = document.getElementById('status');   // 可能是 null（标题栏只留两个按钮）
+  statusEl = statusEl || { textContent: '' };
+  var palette  = document.getElementById('palette');
+  var pick     = document.getElementById('pickColor');
+
+  var notes = [];      // {id,type,x,y,w,html?,src?}
+  var scale = 1;
+  var panX = 0, panY = 0;
+  var z = 1;
+  var seq = 0;
+  var sel = null;
+  var saveTimer = null;
+  var spaceDown = false;   // 按住空格临时平移
+  var ctrlPan = false;     // 按住 Ctrl 临时平移
+
+  function uid() { return 'n' + (++seq) + Date.now().toString(36); }
+
+  function toWorld(clientX, clientY) {
+    var r = stage.getBoundingClientRect();
+    return {
+      x: (clientX - r.left - panX) / scale,
+      y: (clientY - r.top  - panY) / scale
+    };
+  }
+
+  function applyView() {
+    layer.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + scale + ')';
+  }
+
+  /* ---------- 填充色 ---------- */
+  // 按背景亮度决定字色，深底色自动用白字
+  function inkFor(hex) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
+    if (!m) return '#1f2328';
+    var v = parseInt(m[1], 16);
+    var r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
+    var lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return lum > 0.55 ? '#1f2328' : '#ffffff';
+  }
+
+  // 便签的填充色只改一个变量，别的地方不用跟着动
+  function paint(node, bg) {
+    if (!node) return;
+    if (bg) {
+      node.style.setProperty('--bg', bg);
+      node.style.setProperty('--ink', inkFor(bg));
+      node.classList.add('hasfill');
+    } else {
+      node.classList.remove('hasfill');
+      node.style.removeProperty('--bg');
+      node.style.removeProperty('--ink');
+    }
+  }
+
+  function syncPalette() {
+    var rec = sel ? find(sel.dataset.id) : null;
+    var bg = rec ? (rec.bg || '') : '';
+    palette.classList.toggle('on', !!rec);
+    var sws = palette.querySelectorAll('.sw');
+    for (var i = 0; i < sws.length; i++) {
+      sws[i].classList.toggle('act', (sws[i].dataset.bg || '') === bg);
+    }
+    if (bg && /^#[0-9a-f]{6}$/i.test(bg)) {
+      pick.style.background = bg;
+      pick.classList.add('act');
+    } else {
+      pick.style.background = '#fff';
+      pick.classList.remove('act');
+    }
+  }
+
+  function setFill(node, bg) {
+    if (!node) return;
+    var rec = find(node.dataset.id);
+    if (!rec) return;
+    if (bg) rec.bg = bg; else delete rec.bg;
+    paint(node, bg);
+    syncPalette();
+    save();
+  }
+
+  /* ---------- 存储 ---------- */
+  // 界面上不显示「保存中/已保存」这类字（标题栏只留两个按钮），
+  // 这里保留一个空壳，出错时才提示
+  function showStatus(t) {
+    if (statusEl) statusEl.textContent = t || '';
+  }
+
+  function save() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      try {
+        localStorage.setItem(KEY, JSON.stringify(notes));
+        // 通知外壳：画布有改动（用于显示未保存标记 + 触发自动存回草稿）
+        try { window.dispatchEvent(new CustomEvent('dp:dirty')); } catch (e2) { }
+      } catch (e) {
+        showStatus('存储已满');
+      }
+    }, 280);
+  }
+
+  function load() {
+    var raw = null;
+    try { raw = localStorage.getItem(KEY); } catch (e) { raw = null; }
+    if (!raw) return [];
+    try {
+      var arr = JSON.parse(raw);
+      return Object.prototype.toString.call(arr) === '[object Array]' ? arr : [];
+    } catch (e) { return []; }
+  }
+
+  /* ---------- 渲染 ---------- */
+  function nodeById(id) { return layer.querySelector('.note[data-id="' + id + '"]'); }
+
+  // 重要：删除按钮、缩放把手都放在可编辑区「外面」，
+  // 这样它们不会被当成内容存进文字里，也不会被一起选中/复制。
+  function makeNode(n) {
+    var d = document.createElement('div');
+    d.className = 'note' + (n.type === 'img' ? ' imgnote' : '');
+    d.dataset.id = n.id;
+    d.style.left = n.x + 'px';
+    d.style.top  = n.y + 'px';
+
+    var c = document.createElement('div');
+    c.className = 'ct';
+    if (n.type === 'img') {
+      var img = new Image();
+      img.src = n.src;
+      img.draggable = false;
+      if (n.w) {
+        d.style.width = n.w + 'px';
+        c.style.width = n.w + 'px';
+      }
+      c.appendChild(img);
+      // 老数据可能没存比例，或图片还没解码完，高度要等图片就绪后再算一次
+      var sizeImg = function () {
+        var ratio = n.r || (img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : 0);
+        if (!ratio) return;
+        n.r = ratio;
+        var w = n.w || Math.min(img.naturalWidth || 460, 460);
+        var h = Math.round(w / ratio);
+        d.style.width = w + 'px';
+        d.style.height = h + 'px';
+        c.style.width = w + 'px';
+        c.style.height = h + 'px';
+      };
+      sizeImg();
+      if (img.complete) sizeImg();
+      else img.addEventListener('load', sizeImg);
+      img.addEventListener('error', function () {
+        d.style.width = (n.w || 200) + 'px';
+        d.style.height = 'auto';
+        c.style.height = 'auto';
+      });
+    } else {
+      c.contentEditable = 'true';
+      c.spellcheck = false;
+      c.innerHTML = n.html || '';
+      // w 为空 = 没手动改过宽度 -> 自动向右扩容
+      if (n.w) { d.style.width = n.w + 'px'; c.style.width = n.w + 'px'; }
+      else c.className = 'ct auto';
+    }
+    d.appendChild(c);
+
+    // 点便签 = 选中（也会置顶）。
+    // 移动 / 缩放都在画布那一层统一处理（那里是捕获阶段，能拿到完整信息）：
+    //   Ctrl + 拖            = 抓手，挪动这一块
+    //   不按修饰键 + 拖边缘/角 = 缩放（文字改宽度、图片等比缩放）
+    d.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      if (e.target.closest('.del')) return;
+      if (ctrlPan || spaceDown) return;           // 抓手 / 抓画布交给画布层
+      select(d);
+      bringFront(d);
+    });
+
+    var x = document.createElement('div');
+    x.className = 'del';
+    x.textContent = '×';
+    x.title = '删除';
+    x.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+    x.addEventListener('click', function (e) { e.stopPropagation(); remove(n.id); });
+    d.appendChild(x);
+
+    // 恢复这个便签的填充色
+    if (n.bg) paint(d, n.bg);
+
+    return d;
+  }
+
+  function render() {
+    // 重建 DOM 前先收掉焦点：否则 activeElement 会指向已销毁的旧节点，
+    // 之后 Delete 之类的按键会被误判成「正在输入」而失效
+    var ae = document.activeElement;
+    if (ae && ae.isContentEditable) { try { ae.blur(); } catch (e) { } }
+    layer.innerHTML = '';
+    for (var i = 0; i < notes.length; i++) layer.appendChild(makeNode(notes[i]));
+    hint.style.display = notes.length ? 'none' : 'block';
+  }
+
+  function find(id) {
+    for (var i = 0; i < notes.length; i++) if (notes[i].id === id) return notes[i];
+    return null;
+  }
+
+  /* ---------- 选中 / 拖动 ---------- */
+  function select(node) {
+    if (sel && sel !== node) sel.classList.remove('sel');
+    sel = node;
+    if (node) node.classList.add('sel');
+    syncPalette();
+  }
+
+  function bringFront(node) {
+    var rec = find(node.dataset.id);
+    if (rec) rec.z = ++z;
+    node.style.zIndex = z;
+  }
+
+  // 便签上的按下处理：选中 + 置顶 + 允许拖动
+  function onHandle(e, node) {
+    if (e.button !== 0) return;
+    select(node);
+    bringFront(node);
+    startDrag(e, node);
+  }
+
+  function startDrag(e, node) {
+    if (e.button !== 0) return;
+    var rec = find(node.dataset.id);
+    if (!rec) return;
+
+    var sx = e.clientX, sy = e.clientY, ox = rec.x, oy = rec.y;
+    var moved = false;
+    var before = JSON.stringify(notes);      // 拖动前的状态，供撤销
+
+    function mv(ev) {
+      var dx = (ev.clientX - sx) / scale, dy = (ev.clientY - sy) / scale;
+      if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
+      moved = true;
+      node.style.cursor = 'grabbing';
+      rec.x = Math.round(ox + dx);
+      rec.y = Math.round(oy + dy);
+      node.style.left = rec.x + 'px';
+      node.style.top  = rec.y + 'px';
+    }
+    function up() {
+      document.removeEventListener('mousemove', mv);
+      document.removeEventListener('mouseup', up);
+      node.style.cursor = '';
+      if (moved) {
+        undoStack.push(before);
+        if (undoStack.length > UNDO_MAX) undoStack.shift();
+        save();
+        try { window.dispatchEvent(new CustomEvent('dp:draftChanged')); } catch (e) { }
+      }
+    }
+    document.addEventListener('mousemove', mv);
+    document.addEventListener('mouseup', up);
+  }
+
+  function startResize(e, node) {
+    if (e.button !== 0) return;
+    var rec = find(node.dataset.id);
+    if (!rec) return;
+    var ct = node.querySelector('.ct');
+    var sx = e.clientX;
+    var ow = rec.w || node.getBoundingClientRect().width / scale;
+    var before = JSON.stringify(notes);
+    e.preventDefault();
+
+    function mv(ev) {
+      var w = Math.max(60, Math.round(ow + (ev.clientX - sx) / scale));
+      rec.w = w;
+      node.style.width = w + 'px';
+      if (ct) { ct.className = 'ct'; ct.style.width = w + 'px'; }
+    }
+    function up() {
+      document.removeEventListener('mousemove', mv);
+      document.removeEventListener('mouseup', up);
+      undoStack.push(before);
+      if (undoStack.length > UNDO_MAX) undoStack.shift();
+      save();
+      try { window.dispatchEvent(new CustomEvent('dp:draftChanged')); } catch (e2) { }
+    }
+    document.addEventListener('mousemove', mv);
+    document.addEventListener('mouseup', up);
+  }
+
+  // 图片：四角拖动等比缩放
+  function startImgResize(e, node, corner) {
+    if (e.button !== 0) return;
+    var rec = find(node.dataset.id);
+    if (!rec) return;
+    var ct = node.querySelector('.ct');
+    var img = node.querySelector('.ct > img');
+    if (!img) return;
+
+    var ratio = rec.r || (img.naturalWidth / img.naturalHeight) || 1;
+    var rect = node.getBoundingClientRect();
+    var w0 = rect.width / scale;
+    var left0 = rec.x, top0 = rec.y;
+    var sx = e.clientX, sy = e.clientY;
+    var before = JSON.stringify(notes);
+    e.preventDefault();
+
+    var west = corner === 'nw' || corner === 'sw';
+    var north = corner === 'nw' || corner === 'ne';
+
+    function apply(w) {
+      var h = Math.round(w / ratio);
+      rec.w = Math.round(w);
+      rec.x = west ? Math.round(left0 + (w0 - w)) : left0;
+      rec.y = north ? Math.round(top0 + (w0 / ratio - h)) : top0;
+      node.style.width = rec.w + 'px';
+      node.style.left = rec.x + 'px';
+      node.style.top = rec.y + 'px';
+      if (ct) { ct.style.width = rec.w + 'px'; ct.style.height = h + 'px'; }
+      node.style.height = h + 'px';
+    }
+
+    function mv(ev) {
+      var dxs = (ev.clientX - sx) / scale;
+      var dys = (ev.clientY - sy) / scale;
+      var dw = west ? -dxs : dxs;
+      var dh = (north ? -dys : dys) * ratio;
+      // 取两个方向的较大意图，再统一按比例换算，保证不变形
+      var w = w0 + (Math.abs(dw) > Math.abs(dh) ? dw : dh);
+      apply(Math.max(40, w));
+    }
+    function up() {
+      document.removeEventListener('mousemove', mv);
+      document.removeEventListener('mouseup', up);
+      undoStack.push(before);
+      if (undoStack.length > UNDO_MAX) undoStack.shift();
+      save();
+      try { window.dispatchEvent(new CustomEvent('dp:draftChanged')); } catch (e2) { }
+    }
+    document.addEventListener('mousemove', mv);
+    document.addEventListener('mouseup', up);
+  }
+
+  /* ---------- 增删 ---------- */
+  function addNote(x, y, html) {
+    snapshot();                              // 记下「加之前」的状态
+    var rec = { id: uid(), type: 'text', x: x, y: y, html: html || '', z: ++z };
+    notes.push(rec);
+    var node = makeNode(rec);
+    node.style.zIndex = z;
+    layer.appendChild(node);
+    hint.style.display = 'none';
+    return { rec: rec, node: node };
+  }
+
+  function addImage(src, cx, cy) {
+    var probe = new Image();
+    probe.onload = function () {
+      var maxW = 460;
+      var w = probe.naturalWidth, h = probe.naturalHeight;
+      if (!w || !h) return;
+      var ratio = w / h;                       // 用真实像素算比例，缩放才不会走形
+      var disp = w > maxW ? maxW : w;
+      var dh = Math.round(disp / ratio);
+      snapshot();
+      var rec = {
+        id: uid(), type: 'img', src: src, r: ratio,
+        x: Math.round(cx - disp / 2), y: Math.round(cy - dh / 2),
+        w: Math.round(disp), z: ++z
+      };
+      notes.push(rec);
+      var node = makeNode(rec);
+      node.style.zIndex = z;
+      layer.appendChild(node);
+      hint.style.display = 'none';
+      select(node);
+      save();
+    };
+    probe.src = src;
+  }
+
+  function remove(id) {
+    snapshot();
+    for (var i = 0; i < notes.length; i++) {
+      if (notes[i].id === id) { notes.splice(i, 1); break; }
+    }
+    var node = nodeById(id);
+    if (node) {
+      if (sel === node) sel = null;
+      node.remove();
+    }
+    hint.style.display = notes.length ? 'none' : 'block';
+    save();
+  }
+
+  function addTextAtViewportCenter() {
+    var c = toWorld(window.innerWidth / 2, window.innerHeight / 2);
+    var made = addNote(Math.round(c.x) - 60, Math.round(c.y) - 12, '');
+    select(made.node);
+    made.node.querySelector('.ct').focus();
+  }
+
+  /* ---------- 事件 ---------- */
+  // 双击空白处新建文本
+  stage.addEventListener('dblclick', function (e) {
+    if (e.target.closest('.note')) return;
+    var p = toWorld(e.clientX, e.clientY);
+    var made = addNote(Math.round(p.x) - 4, Math.round(p.y) - 10, '');
+    select(made.node);
+    made.node.querySelector('.ct').focus();
+    save();
+  });
+
+  // 文本输入：只存编辑区的内容，不含删除按钮等控件
+  layer.addEventListener('input', function (e) {
+    var ct = e.target.closest('.ct');
+    if (!ct || !ct.isContentEditable) return;
+    var node = ct.closest('.note');
+    if (!node) return;
+    var rec = find(node.dataset.id);
+    if (!rec) return;
+    rec.html = ct.innerHTML;
+    // 自动宽度模式下，文字框会自己向右扩，这里只需保证没有被固定宽度限制
+    if (ct.classList.contains('auto')) {
+      node.style.width = '';
+      ct.style.width = '';
+    }
+    save();
+    // 打字按停顿合并：900ms 没有新输入，就把这一串输入记成一步（供撤销）
+    if (!typing) {
+      typing = true;
+      snapshot();
+    }
+    clearTimeout(typeTimer);
+    typeTimer = setTimeout(function () { typing = false; }, 900);
+    // 通知外壳：内容变了（若当前已关联某份草稿，会自动存回那份文件）
+    try { window.dispatchEvent(new CustomEvent('dp:draftChanged')); } catch (e2) { }
+  });
+
+  // 失焦：空文本框自动丢掉
+  layer.addEventListener('blur', function (e) {
+    var ct = e.target && e.target.closest ? e.target.closest('.ct') : null;
+    if (!ct || !ct.isContentEditable) return;
+    var node = ct.closest('.note');
+    if (!node) return;
+    var rec = find(node.dataset.id);
+    if (!rec) return;
+    if (!ct.textContent.trim() && !ct.querySelector('img')) remove(rec.id);
+  }, true);
+
+  // 点空白：取消选中、收回焦点、并清掉文字选择
+  // （焦点/选择若不清，蓝底选中框会一直留在文字上）
+  function deselectAll() {
+    select(null);
+    var ae = document.activeElement;
+    if (ae && ae.isContentEditable) ae.blur();
+    clearTextSelection();
+    try { stage.focus({ preventScroll: true }); } catch (err) { stage.focus(); }
+  }
+
+  function clearTextSelection() {
+    try {
+      var s = window.getSelection();
+      if (s && s.rangeCount) s.removeAllRanges();
+    } catch (err) { /* 忽略 */ }
+  }
+
+  stage.addEventListener('mousedown', function (e) {
+    if (e.target.closest('.note')) return;
+    deselectAll();
+  });
+
+  // 填充色板
+  palette.addEventListener('mousedown', function (e) {
+    e.stopPropagation();               // 别让画布把选中状态清掉
+  });
+  palette.addEventListener('click', function (e) {
+    var sw = e.target.closest('.sw');
+    if (!sw || !sel) return;
+    e.stopPropagation();
+    var bg = sw.dataset.bg || '';
+    var rec = find(sel.dataset.id);
+    // 再点一次同一个颜色 = 取消填充
+    if (rec && rec.bg === bg) bg = '';
+    setFill(sel, bg);
+  });
+  pick.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+  pick.addEventListener('input', function () {
+    if (sel) setFill(sel, pick.value);
+  });
+
+  // 粘贴图片
+  document.addEventListener('paste', function (e) {
+    var items = (e.clipboardData && e.clipboardData.items) || [];
+    var got = false;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type && items[i].type.indexOf('image') === 0) {
+        var blob = items[i].getAsFile();
+        if (!blob) continue;
+        got = true;
+        readAsDataURL(blob, function (src) {
+          var c = toWorld(window.innerWidth / 2, window.innerHeight / 2);
+          addImage(src, c.x, c.y);
+        });
+      }
+    }
+    // 纯文本粘贴到已聚焦的文本框，交给浏览器默认行为
+    if (got) e.preventDefault();
+  });
+
+  function readAsDataURL(blob, cb) {
+    var fr = new FileReader();
+    fr.onload = function () { cb(fr.result); };
+    fr.readAsDataURL(blob);
+  }
+
+  // 键盘
+  document.addEventListener('keydown', function (e) {
+    var ae = document.activeElement;
+    var inText = !!(ae && (ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA'));
+
+    if ((e.key === 'Delete' || e.key === 'Backspace') && sel && !inText) {
+      e.preventDefault();
+      remove(sel.dataset.id);
+      sel = null;
+      return;
+    }
+    if (e.key === 'Escape') {
+      select(null);
+      if (inText) document.activeElement.blur();
+      return;
+    }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !inText) {
+      e.preventDefault();
+      addTextAtViewportCenter();
+    }
+  });
+
+  // 缩放：滚轮 / Ctrl+滚轮（以光标为锚点）
+  stage.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    var r = stage.getBoundingClientRect();
+    var mx = e.clientX - r.left, my = e.clientY - r.top;
+    var next = scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1);
+    next = Math.max(0.25, Math.min(3, next));
+    if (next === scale) return;
+    // 保持光标下的世界坐标不动
+    panX = mx - (mx - panX) * (next / scale);
+    panY = my - (my - panY) * (next / scale);
+    scale = next;
+    applyView();
+  }, { passive: false });
+
+  // 平移：按住 Ctrl（或空格）临时变成抓手，也可以按住中键拖
+  function syncPanCursor() {
+    stage.classList.toggle('pan', spaceDown);     // 空格 = 抓画布
+    stage.classList.toggle('pick', ctrlPan);      // Ctrl = 抓文字/图片
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.code !== 'Space') return;
+    if (e.target && (e.target.isContentEditable || e.target.tagName === 'BUTTON')) return;
+    if (e.repeat) return;
+    spaceDown = true;
+    syncPanCursor();
+  });
+  document.addEventListener('keyup', function (e) {
+    if (e.code === 'Space') { spaceDown = false; syncPanCursor(); }
+  });
+
+  // 按住 Ctrl = 临时抓手（Ctrl 本身不输入字符，不会干扰打字）
+  document.addEventListener('keydown', function (e) {
+    if (!e.ctrlKey) return;
+    if (e.repeat) return;
+    if (e.target && e.target.tagName === 'BUTTON') return;
+    ctrlPan = true;
+    syncPanCursor();
+  });
+  document.addEventListener('keyup', function (e) {
+    // Control 松开；或松开的是别的键但 Ctrl 已经不在按着了
+    if (e.key === 'Control' || !e.ctrlKey) {
+      ctrlPan = false;
+      syncPanCursor();
+    }
+  });
+  // 窗口失去焦点时按键状态可能收不到 keyup，这里兜底
+  window.addEventListener('blur', function () {
+    ctrlPan = false;
+    spaceDown = false;
+    stage.classList.remove('panning');
+    syncPanCursor();
+  });
+
+  // 命中检测：这个位置是不是在可缩放的边缘/角上
+  // 文本框：右边缘改宽度；图片：四角等比缩放
+  function resizeZone(node, rec, clientX, clientY) {
+    var b = node.getBoundingClientRect();
+    if (rec.type === 'img') {
+      var cs = [['nw', b.left, b.top, 'rzse'], ['se', b.right, b.bottom, 'rzse'],
+                ['ne', b.right, b.top, 'rzne'], ['sw', b.left, b.bottom, 'rzne']];
+      for (var i = 0; i < cs.length; i++) {
+        if (Math.abs(clientX - cs[i][1]) <= 14 && Math.abs(clientY - cs[i][2]) <= 14) {
+          return { corner: cs[i][0], cls: cs[i][3] };
+        }
+      }
+      return null;
+    }
+    // 文字：右侧 9px 内
+    if (clientX >= b.right - 9 && clientX <= b.right + 5) return { corner: null, cls: 'rzw' };
+    return null;
+  }
+
+  stage.addEventListener('mousedown', function (e) {
+    // 空格 = 抓画布（任何位置）
+    // Ctrl = 抓手：按在文字/图片上抓那一块；按在空白处平移画布
+    // 不按修饰键：
+    //   · 按在边缘/角上 = 缩放（文字改宽度、图片等比缩放）
+    //   · 按在其它地方 = 只是选中（文字区仍然可以选字）
+    // 注意这里是捕获阶段，便签自己的 mousedown 收不到，所以都在这里处理。
+    var noteEl = e.target.closest('.note');
+    var onNote = !!noteEl;
+
+    if (!ctrlPan && !spaceDown && e.button === 0 && noteEl && !e.target.closest('.del')) {
+      var zrec = find(noteEl.dataset.id);
+      if (zrec) {
+        var z = resizeZone(noteEl, zrec, e.clientX, e.clientY);
+        if (z) {
+          e.preventDefault();
+          select(noteEl);
+          bringFront(noteEl);
+          if (z.corner) startImgResize(e, noteEl, z.corner);
+          else startResize(e, noteEl);
+          e.stopPropagation();
+          return;
+        }
+      }
+    }
+
+    if (ctrlPan && noteEl && !e.target.closest('.del')) {
+      if (e.button === 0) {
+        var rec = find(noteEl.dataset.id);
+        var isText = !!(rec && rec.type !== 'img');
+        var onText = !!e.target.closest('.ct');
+        if (!isText || onText) {                 // 图片整块可抓；文字要按在文字上
+          e.preventDefault();
+          select(noteEl);
+          bringFront(noteEl);
+          onHandle(e, noteEl);
+          e.stopPropagation();                   // 别让便签再处理一次
+        }
+      }
+      return;
+    }
+
+    var wantPan = e.button === 1 || spaceDown || (ctrlPan && !onNote);
+    if (!wantPan) return;
+    e.preventDefault();
+    if (ctrlPan) clearTextSelection();
+    var sx = e.clientX, sy = e.clientY, ox = panX, oy = panY;
+    stage.classList.add('panning');
+    function mv(ev) {
+      panX = ox + (ev.clientX - sx);
+      panY = oy + (ev.clientY - sy);
+      applyView();
+    }
+    function up() {
+      document.removeEventListener('mousemove', mv);
+      document.removeEventListener('mouseup', up);
+      stage.classList.remove('panning');
+    }
+    document.addEventListener('mousemove', mv);
+    document.addEventListener('mouseup', up);
+  }, true);   // 捕获阶段，抢在便签的拖动之前处理
+
+  // 不按修饰键移动鼠标时，提示「这里能缩放」：文本框右边缘拉宽，图片四角等比缩放。
+  // 按着 Ctrl（抓手）或空格（抓画布）时不提示。
+  function clearResizeHints() {
+    var zs = stage.querySelectorAll('.rzw,.rzse,.rzne');
+    for (var i = 0; i < zs.length; i++) zs[i].classList.remove('rzw', 'rzse', 'rzne');
+  }
+  function syncGrabHints(e) {
+    clearResizeHints();
+    if (ctrlPan || spaceDown) return;
+    var node = e.target.closest ? e.target.closest('.note') : null;
+    if (!node) return;
+    var rec = find(node.dataset.id);
+    if (!rec) return;
+    var z = resizeZone(node, rec, e.clientX, e.clientY);
+    if (z) node.classList.add(z.cls);
+  }
+  stage.addEventListener('mousemove', syncGrabHints);
+  stage.addEventListener('mouseleave', clearResizeHints);
+
+  /* ---------- 撤销（Ctrl+Z） ---------- */
+  // 每次「整块改动」前存一份快照，Ctrl+Z 依次回退。打字这类连续输入按停顿合并成一步。
+  var undoStack = [];
+  var UNDO_MAX = 60;
+  var undoing = false;
+  var typeTimer = null;
+  var typing = false;
+
+  function snapshot() {
+    if (undoing) return;
+    try {
+      var s = JSON.stringify(notes);
+      if (undoStack.length && undoStack[undoStack.length - 1] === s) return;  // 没变就不存
+      undoStack.push(s);
+      if (undoStack.length > UNDO_MAX) undoStack.shift();
+    } catch (e) { }
+  }
+
+  function undo() {
+    if (!undoStack.length) return false;
+    var s = undoStack.pop();
+    undoing = true;
+    try {
+      select(null);
+      var arr = JSON.parse(s);
+      notes = Object.prototype.toString.call(arr) === '[object Array]' ? arr : [];
+      notes.sort(function (a, b) { return (a.z || 0) - (b.z || 0); });
+      render();
+      applyView();
+      save();
+      try { window.dispatchEvent(new CustomEvent('dp:draftChanged')); } catch (e) { }
+    } catch (e2) { } finally {
+      undoing = false;
+    }
+    return true;
+  }
+
+  // 清空：不弹确认，直接清（可用 Ctrl+Z 撤销）
+  document.getElementById('clear').addEventListener('click', function () {
+    if (!notes.length) return;
+    snapshot();
+    notes = [];
+    sel = null;
+    render();
+    save();
+    try { window.dispatchEvent(new CustomEvent('dp:draftChanged')); } catch (e) { }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    var k = (e.key || '').toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && k === 'z' && !e.shiftKey) {
+      var ae = document.activeElement;
+      var inField = ae && (ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
+      if (inField) return;                // 正在输入时让浏览器自己处理（退掉刚打的字）
+      if (undo()) e.preventDefault();
+    }
+  });
+
+  /* ---------- 独立程序外壳 ---------- */
+  // 在浏览器里直接打开这个 html 时 chrome.webview 不存在，相关逻辑自动跳过
+  (function () {
+    var wv = (window.chrome && window.chrome.webview) ? window.chrome.webview : null;
+    var tb = document.getElementById('titlebar');
+
+    if (!wv) {                       // 浏览器里不需要自绘标题栏（按钮仍在 DOM 里，只是隐藏）
+      document.body.classList.add('no-shell');
+      return;
+    }
+
+    document.body.classList.add('embedded');
+    var post = function (m) { try { wv.postMessage(m); } catch (e) { } };
+
+    document.getElementById('btnMin').addEventListener('click', function () { post('min'); });
+    document.getElementById('btnMax').addEventListener('click', function () { post('max'); });
+    document.getElementById('btnClose').addEventListener('click', function () { post('close'); });
+
+    // 按住标题栏空白处拖动窗口；双击 = 最大化/还原
+    // 关键：必须放过按钮，否则拖动会把按钮的点击吃掉（表现就是「点不动」）
+    tb.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      if (e.target.closest('button')) return;
+      e.preventDefault();
+      post('drag');
+    });
+    tb.addEventListener('dblclick', function (e) {
+      if (e.target.closest('button')) return;
+      post('max');
+    });
+
+    // 快捷键：F11 最大化切换、Esc 关闭（编辑文字时不抢 Esc）
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'F11') {
+        e.preventDefault();
+        post('max');
+        return;
+      }
+      var ae = document.activeElement;
+      if (ae && (ae.isContentEditable || ae.tagName === 'INPUT')) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        post('close');
+      }
+    });
+
+    /* ---------- 草稿存取 ---------- */
+    // 约定：页面 -> 宿主  "draft:save|{json}" / "draft:load|名字" / "draft:list"
+    //      宿主 -> 页面  "drafts|<列表>" / "draftResult|{结果}"
+    var CUR = 'draftpad.current';          // 当前草稿名，只记在本地
+    var dirty = false;
+    var pending = null;                    // 等宿主回复时暂存回调
+    var hostOn = true;                     // 嵌在程序里就一直可用（不再依赖首条消息）
+
+    function postDraft(m) { try { wv.postMessage('draft:' + m); } catch (e) { } }
+
+    var nameEl = document.getElementById('draftName');
+    var labelEl = document.getElementById('draftLabel');
+    var wrap = document.getElementById('dlgWrap');
+    var listEl = document.getElementById('draftList');
+
+    function curName() {
+      try { return localStorage.getItem(CUR) || ''; } catch (e) { return ''; }
+    }
+    function setCurName(n) {
+      try { localStorage.setItem(CUR, n || ''); } catch (e) { }
+      labelEl.textContent = n || '未命名';
+    }
+    var readyAt = Date.now() + 800;        // 启动阶段的保存不算是「改动」
+
+    function markDirty(v) {
+      if (v && Date.now() < readyAt) return;   // 忽略启动时的那一次
+      dirty = !!v;
+      document.body.classList.toggle('dirty', dirty);
+    }
+
+    // 当前画布内容（与本地自动保存同一份数据）
+    function snapshot() {
+      try { return localStorage.getItem(KEY) || '[]'; } catch (e) { return '[]'; }
+    }
+    // 就地换掉画布内容：不能用 location.reload()，
+    // 否则 beforeunload 会把存储写回当前画布，把刚载入的数据冲掉
+    function restore(json) {
+      var arr = [];
+      try { arr = JSON.parse(json || '[]'); } catch (e) { arr = []; }
+      if (Object.prototype.toString.call(arr) !== '[object Array]') arr = [];
+      if (window.__dpLoad) window.__dpLoad(arr);
+      else { try { localStorage.setItem(KEY, json || '[]'); } catch (e2) { } }
+    }
+
+    function showTab(which) {
+      var tabs = document.querySelectorAll('#dlgTabs .tab');
+      for (var i = 0; i < tabs.length; i++) {
+        tabs[i].classList.toggle('on', tabs[i].dataset.tab === which);
+      }
+      document.getElementById('paneSave').hidden = which !== 'save';
+      document.getElementById('paneLoad').hidden = which !== 'load';
+      if (which === 'save') {
+        setTimeout(function () { nameEl.focus(); nameEl.select(); }, 30);
+      } else {
+        listEl.innerHTML = '<div class="empty">读取中…</div>';
+        postDraft('list');
+      }
+    }
+
+    function openDialog(which) {
+      if (!hostOn) return;
+      wrap.classList.add('on');
+      wrap.setAttribute('aria-hidden', 'false');
+      if (which === 'save') nameEl.value = curName();
+      showTab(which);
+    }
+    function closeDialog() {
+      wrap.classList.remove('on');
+      wrap.setAttribute('aria-hidden', 'true');
+    }
+
+    function fmtTime(ms) {
+      var d = new Date(ms);
+      var p = function (n) { return n < 10 ? '0' + n : '' + n; };
+      return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    }
+
+    function renderList(list) {
+      listEl.innerHTML = '';
+      if (!list || !list.length) {
+        listEl.innerHTML = '<div class="empty">还没有保存过草稿</div>';
+        return;
+      }
+      list.forEach(function (item) {
+        var row = document.createElement('div');
+        row.className = 'item';
+        var nm = document.createElement('span');
+        nm.className = 'nm';
+        nm.textContent = item.name;
+        var tm = document.createElement('span');
+        tm.className = 'tm';
+        tm.textContent = fmtTime(item.mtime);
+        var dx = document.createElement('span');
+        dx.className = 'delx';
+        dx.textContent = '✕';
+        dx.title = '删除这份草稿';
+        dx.addEventListener('click', function (e) {
+          e.stopPropagation();
+          postDraft('del|' + item.name);      // 直接删，不弹确认
+        });
+        row.appendChild(nm); row.appendChild(tm); row.appendChild(dx);
+        row.addEventListener('click', function () {
+          loading = true;                       // 封住自动保存
+          if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+          pending = function (r) {
+            if (!r || !r.ok) { loading = false; alert((r && r.error) || '载入失败'); return; }
+            setCurName(r.name);                 // 关联上这份草稿 -> 之后的改动自动存回它
+            markDirty(false);
+            closeDialog();
+            autoSaved = false;
+            try {
+              restore(r.data);                  // 载入过程中编辑器可能派发 dp:draftChanged
+            } finally {
+              if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+            }
+            // 稍后才解封：给载入引发的那些通知留出时间，别把中间状态写回文件
+            setTimeout(function () {
+              if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+              loading = false;
+            }, 900);
+          };
+          postDraft('load|' + item.name);
+        });
+        listEl.appendChild(row);
+      });
+    }
+
+    // 宿主回话
+    wv.addEventListener('message', function (e) {
+      var raw = e.data;
+      if (typeof raw !== 'string') return;
+      var bar = raw.indexOf('|');
+      var type = bar < 0 ? raw : raw.substring(0, bar);
+      var body = bar < 0 ? '' : raw.substring(bar + 1);
+      hostOn = true;
+      if (type === 'drafts') {
+        try { renderList(JSON.parse(body)); } catch (err) { renderList([]); }
+      } else if (type === 'draftResult') {
+        var r = null;
+        try { r = JSON.parse(body); } catch (err) { r = { ok: false, error: '返回数据异常' }; }
+        if (r && r.ok && r.action === 'save') autoSaved = false;   // 这是刚刚那次自动保存的回执
+        if (pending) { var f = pending; pending = null; f(r); }
+        else if (r && r.ok && r.action === 'save') {
+          setCurName(r.name);        // 手动保存成功 -> 关联上，之后自动存回
+          markDirty(false);
+          closeDialog();
+        } else if (r && !r.ok) {
+          autoSaved = false;
+          alert(r.error || '出错了');
+        }
+      }
+    });
+
+    /* ---------- 自动保存 ---------- */
+    // 规则：新草稿要手动保存；一旦关联了某份草稿（手动保存过 / 载入过），
+    //       之后在画布上的任何改动都会自动存回那份草稿。
+    var autoTimer = null;
+    var autoSaved = false;
+    var loading = false;               // 载入草稿期间为 true，避免自动保存把空画布写回
+
+    function autoSaveDraft() {
+      if (loading) return;              // 正在载入草稿，别把中间状态写回去
+      if (!curName()) return;
+      if (autoTimer) clearTimeout(autoTimer);
+      autoTimer = setTimeout(function () {
+        autoTimer = null;
+        if (loading || autoSaved) return;
+        // 自动保存不用「空画布」覆盖已有草稿：
+        // 否则清空一下就把文件毁了（想存成空的，手动点保存即可）
+        var data = snapshot();
+        if (isEmptyDraft(data)) return;
+        autoSaved = true;
+        // prev 用来告诉宿主「这是同一份草稿」，避免自动保存时被当成新草稿
+        postDraft('save|' + JSON.stringify({ name: curName(), prev: curName(), data: data }));
+      }, 800);
+    }
+
+    function isEmptyDraft(json) {
+      try {
+        var a = JSON.parse(json);
+        return Object.prototype.toString.call(a) === '[object Array]' && a.length === 0;
+      } catch (e) { return false; }
+    }
+
+    window.addEventListener('dp:draftChanged', autoSaveDraft);
+    document.getElementById('btnDraft').addEventListener('click', function () { openDialog('save'); });
+    document.getElementById('dlgX').addEventListener('click', closeDialog);
+    wrap.addEventListener('mousedown', function (e) { if (e.target === wrap) closeDialog(); });
+    var tabs = document.querySelectorAll('#dlgTabs .tab');
+    for (var ti = 0; ti < tabs.length; ti++) {
+      tabs[ti].addEventListener('click', function () { showTab(this.dataset.tab); });
+    }
+    document.getElementById('doSave').addEventListener('click', function () {
+      var nm = (nameEl.value || '').trim();
+      if (!nm) { nameEl.focus(); return; }
+      // prev = 当前关联的草稿名。改了名字就是「重命名」，宿主会把旧文件改名，不会再存一份
+      postDraft('save|' + JSON.stringify({ name: nm, prev: curName(), data: snapshot() }));
+    });
+    nameEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); document.getElementById('doSave').click(); }
+    });
+    document.getElementById('doNew').addEventListener('click', function () {
+      closeDialog();
+      setCurName('');
+      autoSaved = false;
+      markDirty(false);
+      restore('[]');
+    });
+
+    // 画布每次自动保存后都会派发 dp:dirty —— 那是「与磁盘上的草稿不一致」的信号
+    window.addEventListener('dp:dirty', function () { markDirty(true); });
+
+    // 载入完成后清掉「未保存」标记
+    window.addEventListener('dp:loaded', function () { markDirty(false); });
+
+    // 供自动化测试使用：把「未保存」标记归零
+    window.__resetDirty = function () { markDirty(false); };
+    setCurName(window.__dpFresh ? '' : curName());
+  })();
+
+  /* ---------- 启动 ---------- */
+  function adopt(arr) {
+    notes = Object.prototype.toString.call(arr) === '[object Array]' ? arr : [];
+    notes.sort(function (a, b) { return (a.z || 0) - (b.z || 0); });
+    for (var i = 0; i < notes.length; i++) {
+      if (!notes[i].id) notes[i].id = uid();
+      if (notes[i].z && notes[i].z > z) z = notes[i].z;
+    }
+    render();
+    applyView();
+  }
+
+  adopt(load());
+
+  // 供外壳「载入草稿」调用：就地换内容，不走页面重载
+  window.__dpLoad = function (arr) {
+    snapshot();                              // 记下「载入前」的画布，Ctrl+Z 可退回去
+    select(null);
+    adopt(arr);
+    save();                                  // 存到本地，下次打开还是这份
+    try { window.dispatchEvent(new CustomEvent('dp:loaded')); } catch (e) { }
+  };
+
+  window.addEventListener('beforeunload', function () {
+    try { localStorage.setItem(KEY, JSON.stringify(notes)); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>
